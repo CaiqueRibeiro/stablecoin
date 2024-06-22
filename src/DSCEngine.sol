@@ -24,10 +24,16 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     uint256 private constant LIQUIDATION_PRECISION = 100;
     uint256 private constant MIN_HEALTH_FACTOR = 1;
 
+    // price feed for each collateral token
     mapping(address token => address priceFeed) private s_priceFeeds;
+    // how much user deposited for each collateral
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
+    // amount of stablecoin minted for each user
     mapping(address user => uint256 dscMintedAmount) private s_DSCMinted;
+
+    // address of permited collateral tokens (same as key of "s_priceFeeds")
     address[] private s_collateralTokens;
+
     DecentralizedStableCoin private immutable i_dscToken;
 
     event CollateralDeposited(address indexed user, address indexed token, uint256 amount);
@@ -132,6 +138,7 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         }
     }
 
+    // Sums the collateral value of each collateral token user deposited.
     function getAccountCollateralValue(address user) public view returns (uint256 totalCollaterlValueInUsed) {
         /*  loop through each collateral token, get the amount they've deposited,
             and map it to the price, to get the USD value
@@ -143,6 +150,7 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         }
     }
 
+    // Get USD value of the token using Chainlink Data Feed
     function getUsdValue(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         (, int256 price,,,) = priceFeed.latestRoundData();
