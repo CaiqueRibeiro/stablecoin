@@ -5,15 +5,15 @@
 pragma solidity 0.8.24;
 
 interface IDSCEngine {
-    function depositCollateralAndMintDsc() external;
+    function depositCollateralAndMintDsc(uint256 amountDscToMint) external;
 
-    function depositCollateral() external;
+    function depositCollateral(address tokenCollateralAddress, uint256 amountCollateral) external;
 
     function redeemCollateralForDsc() external;
 
     function redeemCollateral() external;
 
-    function mintDsc() external;
+    function mintDsc(uint256 amountDscToMint) external;
 
     function burnDsc() external;
 
