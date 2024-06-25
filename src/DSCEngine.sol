@@ -66,11 +66,17 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         i_dscToken = DecentralizedStableCoin(dscAddress);
     }
 
-    function depositCollateralAndMintDsc(uint256 amountDscToMint) external {}
+    function depositCollateralAndMintDsc(
+        address tokenCollateralAddress,
+        uint256 amountCollateral,
+        uint256 amountDscToMint
+    ) external {
+        depositCollateral(tokenCollateralAddress, amountCollateral);
+        mintDsc(amountDscToMint);
+    }
 
     function depositCollateral(address tokenCollateralAddress, uint256 amountCollateral)
-        external
-        override
+        public
         onlyAllowedToken(tokenCollateralAddress)
         moreThanZero(amountCollateral)
         nonReentrant
@@ -87,7 +93,7 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
 
     function redeemCollateral() external override {}
 
-    function mintDsc(uint256 amountDscToMint) external override moreThanZero(amountDscToMint) {
+    function mintDsc(uint256 amountDscToMint) public moreThanZero(amountDscToMint) {
         s_DSCMinted[msg.sender] += amountDscToMint;
         _revertIfHealthFactorIsBroken(msg.sender);
         bool minted = i_dscToken.mint(msg.sender, amountDscToMint);
