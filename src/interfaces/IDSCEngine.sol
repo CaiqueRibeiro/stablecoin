@@ -11,11 +11,7 @@ interface IDSCEngine {
         uint256 amountDscToMint
     ) external;
 
-    function redeemCollateralForDsc() external;
-
-    function redeemCollateral() external;
-
-    function burnDsc() external;
+    function redeemCollateralForDsc(address collateralTokenAddress, uint256 amountCollateral, uint256 amountDscToBurn) external;
 
     function liquidate() external;
 

@@ -37,6 +37,7 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     DecentralizedStableCoin private immutable i_dscToken;
 
     event CollateralDeposited(address indexed user, address indexed token, uint256 amount);
+    event CollateralRedeemed(address indexed user, address indexed token, uint256 amount);
 
     modifier moreThanZero(uint256 amountCollateral) {
         if (amountCollateral == 0) {
@@ -89,9 +90,27 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         }
     }
 
-    function redeemCollateralForDsc() external override {}
+    function redeemCollateral(address collateralTokenAddress, uint256 amount)
+        public
+        moreThanZero(amount)
+        nonReentrant
+    {
+        s_collateralDeposited[msg.sender][collateralTokenAddress] -= amount;
+        emit CollateralRedeemed(msg.sender, collateralTokenAddress, amount);
+        bool success = IERC20(collateralTokenAddress).transfer(address(this), amount);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
-    function redeemCollateral() external override {}
+    function redeemCollateralForDsc(address collateralTokenAddress, uint256 amountCollateral, uint256 amountDscToBurn)
+        external
+        override
+    {
+        burnDsc(amountDscToBurn);
+        redeemCollateral(collateralTokenAddress, amountCollateral);
+    }
 
     function mintDsc(uint256 amountDscToMint) public moreThanZero(amountDscToMint) {
         s_DSCMinted[msg.sender] += amountDscToMint;
@@ -102,7 +121,14 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         }
     }
 
-    function burnDsc() external override {}
+    function burnDsc(uint256 amountDsc) public {
+        s_DSCMinted[msg.sender] -= amountDsc;
+        bool success = i_dscToken.transferFrom(msg.sender, address(this), amountDsc);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        i_dscToken.burn(amountDsc);
+    }
 
     function liquidate() external override {}
 
