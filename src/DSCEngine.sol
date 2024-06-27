@@ -24,15 +24,14 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     uint256 private constant LIQUIDATION_PRECISION = 100;
     uint256 private constant MIN_HEALTH_FACTOR = 1;
 
+    // address of permited collateral tokens (same as key of "s_priceFeeds")
+    address[] private s_collateralTokens;
     // price feed for each collateral token
     mapping(address token => address priceFeed) private s_priceFeeds;
     // how much user deposited for each collateral
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
     // amount of stablecoin minted for each user
     mapping(address user => uint256 dscMintedAmount) private s_DSCMinted;
-
-    // address of permited collateral tokens (same as key of "s_priceFeeds")
-    address[] private s_collateralTokens;
 
     DecentralizedStableCoin private immutable i_dscToken;
 
@@ -76,6 +75,18 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         mintDsc(amountDscToMint);
     }
 
+    function redeemCollateralForDsc(address collateralTokenAddress, uint256 amountCollateral, uint256 amountDscToBurn)
+        external
+        override
+    {
+        burnDsc(amountDscToBurn);
+        redeemCollateral(collateralTokenAddress, amountCollateral);
+    }
+
+    function liquidate() external override {}
+
+    function getHealthFactor() external view override {}
+
     function depositCollateral(address tokenCollateralAddress, uint256 amountCollateral)
         public
         onlyAllowedToken(tokenCollateralAddress)
@@ -104,14 +115,6 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
-    function redeemCollateralForDsc(address collateralTokenAddress, uint256 amountCollateral, uint256 amountDscToBurn)
-        external
-        override
-    {
-        burnDsc(amountDscToBurn);
-        redeemCollateral(collateralTokenAddress, amountCollateral);
-    }
-
     function mintDsc(uint256 amountDscToMint) public moreThanZero(amountDscToMint) {
         s_DSCMinted[msg.sender] += amountDscToMint;
         _revertIfHealthFactorIsBroken(msg.sender);
@@ -130,9 +133,26 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         i_dscToken.burn(amountDsc);
     }
 
-    function liquidate() external override {}
+        // Sums the collateral value of each collateral token user deposited.
+    function getAccountCollateralValue(address user) public view returns (uint256 totalCollaterlValueInUsed) {
+        /*  loop through each collateral token, get the amount they've deposited,
+            and map it to the price, to get the USD value
+        */
+        for (uint256 i = 0; i < s_collateralTokens.length; i++) {
+            address token = s_collateralTokens[i];
+            uint256 amount = s_collateralDeposited[user][token];
+            totalCollaterlValueInUsed += getUsdValue(token, amount);
+        }
+    }
 
-    function getHealthFactor() external view override {}
+    // Get USD value of the token using Chainlink Data Feed
+    function getUsdValue(address token, uint256 amount) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        (, int256 price,,,) = priceFeed.latestRoundData();
+        // 1 ETH = $1000
+        // The returned value from CL will be 1000 * 1e8
+        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
 
     function _getAccountInformation(address user)
         private
@@ -168,26 +188,5 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
             revert DSCEngine__BreaksHealthFactor(userHealthFactor);
         }
-    }
-
-    // Sums the collateral value of each collateral token user deposited.
-    function getAccountCollateralValue(address user) public view returns (uint256 totalCollaterlValueInUsed) {
-        /*  loop through each collateral token, get the amount they've deposited,
-            and map it to the price, to get the USD value
-        */
-        for (uint256 i = 0; i < s_collateralTokens.length; i++) {
-            address token = s_collateralTokens[i];
-            uint256 amount = s_collateralDeposited[user][token];
-            totalCollaterlValueInUsed += getUsdValue(token, amount);
-        }
-    }
-
-    // Get USD value of the token using Chainlink Data Feed
-    function getUsdValue(address token, uint256 amount) public view returns (uint256) {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
-        // 1 ETH = $1000
-        // The returned value from CL will be 1000 * 1e8
-        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
     }
 }
