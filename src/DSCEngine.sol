@@ -17,12 +17,15 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     error DSCEngine__TransferFailed();
     error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
     error DSEngine__MintFailed();
+    error DSCEngine__HealthFactorOk();
+    error DSCEngine__HealthFactorNotImproved();
 
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_THRESHOLD = 50; // 200% overcollateralized
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18;
+    uint256 private constant LIQUIDATION_BONUS = 10; // 10%
 
     // address of permited collateral tokens (same as key of "s_priceFeeds")
     address[] private s_collateralTokens;
@@ -36,7 +39,7 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     DecentralizedStableCoin private immutable i_dscToken;
 
     event CollateralDeposited(address indexed user, address indexed token, uint256 amount);
-    event CollateralRedeemed(address indexed user, address indexed token, uint256 amount);
+    event CollateralRedeemed(address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount);
 
     modifier moreThanZero(uint256 amountCollateral) {
         if (amountCollateral == 0) {
@@ -83,7 +86,24 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         redeemCollateral(collateralTokenAddress, amountCollateral);
     }
 
-    function liquidate() external override {}
+    // If we start nearing undercollateralization we need someone to liquidate positions
+    // If someone is amost undercollateralized we'll pay you to liquidate them
+    function liquidate(address collateral, address user, uint256 debtToCover) external override {
+        uint256 startingUserHealthFactor = _healthFactor(user);
+        if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
+            revert DSCEngine__HealthFactorOk();
+        }
+        uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(collateral, debtToCover);
+        uint256 bonusCollateral = (tokenAmountFromDebtCovered * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
+        uint256 totalCollateralToRedeeem = tokenAmountFromDebtCovered + bonusCollateral;
+        _redeemCollateral(user, msg.sender, collateral, totalCollateralToRedeeem);
+        _burnDsc(debtToCover, user, msg.sender);
+        uint256 endingUserHealthFactor = _healthFactor(user);
+        if(endingUserHealthFactor <= startingUserHealthFactor) {
+            revert DSCEngine__HealthFactorNotImproved();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     function getHealthFactor() external view override {}
 
@@ -101,17 +121,12 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
         }
     }
 
-    function redeemCollateral(address collateralTokenAddress, uint256 amount)
+    function redeemCollateral(address tokenCollateralAddress, uint256 amount)
         public
         moreThanZero(amount)
         nonReentrant
     {
-        s_collateralDeposited[msg.sender][collateralTokenAddress] -= amount;
-        emit CollateralRedeemed(msg.sender, collateralTokenAddress, amount);
-        bool success = IERC20(collateralTokenAddress).transfer(address(this), amount);
-        if (!success) {
-            revert DSCEngine__TransferFailed();
-        }
+        _redeemCollateral(msg.sender, msg.sender, tokenCollateralAddress, amount);
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
@@ -125,15 +140,17 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     }
 
     function burnDsc(uint256 amountDsc) public {
-        s_DSCMinted[msg.sender] -= amountDsc;
-        bool success = i_dscToken.transferFrom(msg.sender, address(this), amountDsc);
-        if (!success) {
-            revert DSCEngine__TransferFailed();
-        }
-        i_dscToken.burn(amountDsc);
+        _burnDsc(amountDsc, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
-        // Sums the collateral value of each collateral token user deposited.
+    function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        (, int256 price,,,) = priceFeed.latestRoundData();
+        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION);
+    }
+
+    // Sums the collateral value (in USD) of each collateral token user deposited.
     function getAccountCollateralValue(address user) public view returns (uint256 totalCollaterlValueInUsed) {
         /*  loop through each collateral token, get the amount they've deposited,
             and map it to the price, to get the USD value
@@ -149,9 +166,27 @@ contract DSCEngine is IDSCEngine, NoDelegateCall, ReentrancyGuard {
     function getUsdValue(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         (, int256 price,,,) = priceFeed.latestRoundData();
-        // 1 ETH = $1000
+        // ex: 1 ETH = $1000
         // The returned value from CL will be 1000 * 1e8
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
+
+    function _redeemCollateral( address from, address to, address tokenCollateralAddress, uint256 amountCollateral) private {
+        s_collateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
+        emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transfer(to, amountCollateral);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+    }
+
+    function _burnDsc(uint256 amountDscToBurn, address onBehalfOf, address dscFrom) private {
+        s_DSCMinted[onBehalfOf] -= amountDscToBurn;
+        bool success = i_dscToken.transferFrom(dscFrom, address(this), amountDscToBurn);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        i_dscToken.burn(amountDscToBurn);
     }
 
     function _getAccountInformation(address user)
